@@ -209,10 +209,15 @@ class MainWindow(QMainWindow):
         self._current_index = -1
 
         # Keyboard shortcuts
-        QShortcut(QKeySequence(Qt.Key_Right), self, self._next_frame)
-        QShortcut(QKeySequence(Qt.Key_D), self, self._next_frame)
-        QShortcut(QKeySequence(Qt.Key_Left), self, self._prev_frame)
-        QShortcut(QKeySequence(Qt.Key_A), self, self._prev_frame)
+        for key, slot in [
+            (Qt.Key_Right, self._next_frame),
+            (Qt.Key_D, self._next_frame),
+            (Qt.Key_Left, self._prev_frame),
+            (Qt.Key_A, self._prev_frame),
+        ]:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            sc.activated.connect(slot)
 
     def _create_toolbar(self):
         toolbar = self.addToolBar("Controls")
@@ -305,15 +310,15 @@ class MainWindow(QMainWindow):
 
     def _build_file_list(self, filepath):
         """Build file list from the directory of the given file."""
-        directory = os.path.dirname(filepath)
+        directory = os.path.dirname(os.path.abspath(filepath))
         extensions = ('.bin', '.pcd')
         files = []
         for ext in extensions:
             files.extend(glob.glob(os.path.join(directory, f'*{ext}')))
-        files.sort()
-        self._file_list = files
+        self._file_list = sorted(os.path.normpath(f) for f in files)
+        target = os.path.normpath(os.path.abspath(filepath))
         try:
-            self._current_index = files.index(os.path.abspath(filepath))
+            self._current_index = self._file_list.index(target)
         except ValueError:
             self._current_index = -1
 
@@ -327,7 +332,8 @@ class MainWindow(QMainWindow):
             return
 
         # Build file list if this is a new file (not navigation)
-        if not self._file_list or filepath not in self._file_list:
+        norm = os.path.normpath(os.path.abspath(filepath))
+        if not self._file_list or norm not in self._file_list:
             self._build_file_list(filepath)
 
         # Load
