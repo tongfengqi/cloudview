@@ -4,7 +4,7 @@ import math
 import numpy as np
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtOpenGL import QOpenGLFunctions_3_3_Compatibility
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 
 # GL constants
@@ -27,6 +27,8 @@ GL_COLOR_ARRAY = 0x8076
 
 class GLViewer(QOpenGLWidget):
     """3D point cloud viewer with trackball camera."""
+
+    bbox_selected = Signal(object)  # emits BBox3D or None
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +59,8 @@ class GLViewer(QOpenGLWidget):
         # Bounding boxes
         self._bboxes = None   # list of BBox3D
         self._show_bboxes = True
+        self._selected_bbox = None
+        self._drag_start = None  # track if mouse was dragged vs clicked
 
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -263,12 +267,18 @@ class GLViewer(QOpenGLWidget):
     def _draw_bboxes(self, gl):
         """Draw 3D bounding boxes."""
         for bbox in self._bboxes:
+            is_selected = (bbox is self._selected_bbox)
             r, g, b = bbox.color
             edges = bbox.get_edges()
 
+            # Selected bbox: brighter, thicker
+            line_width = 4.0 if is_selected else 2.0
+            edge_alpha = 1.0 if is_selected else 0.9
+            face_alpha = 0.25 if is_selected else 0.12
+
             # Draw edges
-            gl.glLineWidth(2.0)
-            gl.glColor4f(r, g, b, 0.9)
+            gl.glLineWidth(line_width)
+            gl.glColor4f(r, g, b, edge_alpha)
             gl.glBegin(GL_LINES)
             for v1, v2 in edges:
                 gl.glVertex3f(*v1)
@@ -277,14 +287,14 @@ class GLViewer(QOpenGLWidget):
 
             # Draw semi-transparent bottom face
             gl.glEnable(GL_BLEND)
-            gl.glColor4f(r, g, b, 0.12)
+            gl.glColor4f(r, g, b, face_alpha)
             gl.glBegin(GL_QUADS)
             for v in bbox.get_bottom_face():
                 gl.glVertex3f(*v)
             gl.glEnd()
 
             # Draw semi-transparent top face
-            gl.glColor4f(r, g, b, 0.08)
+            gl.glColor4f(r, g, b, face_alpha * 0.6)
             gl.glBegin(GL_QUADS)
             for v in bbox.get_top_face():
                 gl.glVertex3f(*v)
@@ -302,6 +312,90 @@ class GLViewer(QOpenGLWidget):
             gl.glVertex3f(*end)
             gl.glVertex3f(*arrow_right)
             gl.glEnd()
+
+    # -- Picking --
+
+    def _pick_bbox(self, mx, my):
+        """Pick the nearest bbox under mouse position (mx, my)."""
+        ray_origin, ray_dir = self._screen_to_ray(mx, my)
+        if ray_origin is None:
+            return
+
+        best_bbox = None
+        best_dist = float('inf')
+
+        for bbox in self._bboxes:
+            t = self._ray_intersect_bbox(ray_origin, ray_dir, bbox)
+            if t is not None and t < best_dist:
+                best_dist = t
+                best_bbox = bbox
+
+        self._selected_bbox = best_bbox
+        self.bbox_selected.emit(best_bbox)
+        self.update()
+
+    def _screen_to_ray(self, mx, my):
+        """Convert screen coordinates to a 3D ray (origin, direction)."""
+        w = max(self.width(), 1)
+        h = max(self.height(), 1)
+
+        # NDC coordinates
+        ndc_x = (2.0 * mx / w) - 1.0
+        ndc_y = 1.0 - (2.0 * my / h)
+
+        # Inverse projection
+        aspect = w / h
+        f = 1.0 / math.tan(math.radians(self._cam_fov) / 2)
+        near = max(self._cam_dist * 0.001, 0.01)
+
+        # Ray in view space
+        ray_view = np.array([ndc_x * aspect / f, ndc_y / f, -1.0], dtype=np.float32)
+
+        # View matrix
+        eye = self._cam_eye()
+        target = self._cam_target
+        up = np.array([0, 0, 1], dtype=np.float32)
+
+        fwd = target - eye
+        fwd = fwd / np.linalg.norm(fwd)
+        right = np.cross(fwd, up)
+        right = right / np.linalg.norm(right)
+        up_vec = np.cross(right, fwd)
+
+        # Transform ray to world space
+        ray_dir = right * ray_view[0] + up_vec * ray_view[1] - fwd * ray_view[2]
+        ray_dir = ray_dir / np.linalg.norm(ray_dir)
+
+        return eye, ray_dir
+
+    def _ray_intersect_bbox(self, ray_origin, ray_dir, bbox):
+        """Ray-AABB intersection test. Returns t (distance) or None."""
+        # Use axis-aligned bounding box of the oriented bbox vertices
+        verts = bbox.vertices
+        bmin = verts.min(axis=0)
+        bmax = verts.max(axis=0)
+
+        # Slab intersection test
+        t_min = -float('inf')
+        t_max = float('inf')
+
+        for i in range(3):
+            if abs(ray_dir[i]) < 1e-10:
+                if ray_origin[i] < bmin[i] or ray_origin[i] > bmax[i]:
+                    return None
+            else:
+                t1 = (bmin[i] - ray_origin[i]) / ray_dir[i]
+                t2 = (bmax[i] - ray_origin[i]) / ray_dir[i]
+                t_near = min(t1, t2)
+                t_far = max(t1, t2)
+                t_min = max(t_min, t_near)
+                t_max = min(t_max, t_far)
+                if t_min > t_max or t_max < 0:
+                    return None
+
+        if t_min < 0:
+            return t_max if t_max > 0 else None
+        return t_min
 
     # -- Camera --
 
@@ -346,6 +440,7 @@ class GLViewer(QOpenGLWidget):
     def mousePressEvent(self, event):
         self._last_mouse = event.position().toPoint()
         self._mouse_button = event.button()
+        self._drag_start = event.position().toPoint()
 
     def mouseMoveEvent(self, event):
         if self._last_mouse is None:
@@ -370,8 +465,17 @@ class GLViewer(QOpenGLWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        # If left click without drag → pick bbox
+        if (self._mouse_button == Qt.LeftButton and self._drag_start is not None
+                and self._bboxes and self._show_bboxes):
+            pos = event.position().toPoint()
+            dx = abs(pos.x() - self._drag_start.x())
+            dy = abs(pos.y() - self._drag_start.y())
+            if dx < 3 and dy < 3:  # not a drag, it's a click
+                self._pick_bbox(pos.x(), pos.y())
         self._last_mouse = None
         self._mouse_button = None
+        self._drag_start = None
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
