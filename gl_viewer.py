@@ -74,7 +74,7 @@ class GLViewer(QOpenGLWidget):
             ext = float(np.max(pts.max(axis=0) - pts.min(axis=0)))
             self._extent = ext if math.isfinite(ext) and ext > 0 else 10.0
             self._cam_target = self._center.copy()
-            self._cam_dist = self._extent * 1.8
+            self._cam_dist = self._extent * 1.0
             if self._cam_dist < 1.0:
                 self._cam_dist = 10.0
         self.update()
@@ -90,7 +90,7 @@ class GLViewer(QOpenGLWidget):
     def reset_view(self):
         if self._points is not None:
             self._cam_target = self._center.copy()
-            self._cam_dist = self._extent * 1.8
+            self._cam_dist = self._extent * 1.0
         self._cam_yaw = 45.0
         self._cam_pitch = 30.0
         self.update()
