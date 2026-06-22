@@ -66,7 +66,7 @@ class GLViewer(QOpenGLWidget):
 
     # -- Public API --
 
-    def set_point_cloud(self, points, colors=None):
+    def set_point_cloud(self, points, colors=None, reset_camera=True):
         """Set point cloud data. points: Nx3 float32, colors: Nx3 float32."""
         self._points = points.astype(np.float32) if points is not None else None
         self._colors = colors.astype(np.float32) if colors is not None else None
@@ -77,10 +77,11 @@ class GLViewer(QOpenGLWidget):
             self._center = (pts.min(axis=0) + pts.max(axis=0)) / 2
             ext = float(np.max(pts.max(axis=0) - pts.min(axis=0)))
             self._extent = ext if math.isfinite(ext) and ext > 0 else 10.0
-            self._cam_target = self._center.copy()
-            self._cam_dist = self._extent * 1.0
-            if self._cam_dist < 1.0:
-                self._cam_dist = 10.0
+            if reset_camera:
+                self._cam_target = self._center.copy()
+                self._cam_dist = self._extent * 1.0
+                if self._cam_dist < 1.0:
+                    self._cam_dist = 10.0
         self.update()
 
     def set_point_size(self, size):

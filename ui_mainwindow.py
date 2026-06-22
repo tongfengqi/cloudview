@@ -263,6 +263,7 @@ class MainWindow(QMainWindow):
         # File list for navigation
         self._file_list = []
         self._current_index = -1
+        self._navigating = False  # True when loading via prev/next/slider
 
         # Keyboard shortcuts
         for key, slot in [
@@ -435,21 +436,27 @@ class MainWindow(QMainWindow):
         """Jump to frame when slider is dragged."""
         if 0 <= index < len(self._file_list):
             self._current_index = index
+            self._navigating = True
             self._load_file(self._file_list[self._current_index], skip_popup=True)
+            self._navigating = False
 
     def _next_frame(self):
         if not self._file_list or self._current_index < 0:
             return
         if self._current_index < len(self._file_list) - 1:
             self._current_index += 1
+            self._navigating = True
             self._load_file(self._file_list[self._current_index], skip_popup=True)
+            self._navigating = False
 
     def _prev_frame(self):
         if not self._file_list or self._current_index < 0:
             return
         if self._current_index > 0:
             self._current_index -= 1
+            self._navigating = True
             self._load_file(self._file_list[self._current_index], skip_popup=True)
+            self._navigating = False
 
     def _open_json_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -483,7 +490,7 @@ class MainWindow(QMainWindow):
             colors = values_to_colors_fast(values, cmap)
         else:
             colors = None
-        self.viewer.set_point_cloud(self._pc_data.points, colors)
+        self.viewer.set_point_cloud(self._pc_data.points, colors, reset_camera=not self._navigating)
 
     def _on_color_mode_changed(self, _):
         self._apply_colors()
