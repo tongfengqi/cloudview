@@ -302,7 +302,7 @@ class MainWindow(QMainWindow):
         # Color mode
         toolbar.addWidget(QLabel(" Color: "))
         self.combo_color = QComboBox()
-        self.combo_color.addItems(["Uniform", "Z Height"])
+        self.combo_color.addItems(["Uniform", "Z Height", "Intensity"])
         self.combo_color.currentTextChanged.connect(self._on_color_mode_changed)
         toolbar.addWidget(self.combo_color)
 
@@ -372,7 +372,32 @@ class MainWindow(QMainWindow):
         files = []
         for ext in extensions:
             files.extend(glob.glob(os.path.join(directory, f'*{ext}')))
-        self._file_list = sorted(os.path.normpath(f) for f in files)
+            
+        def natural_keys(filepath):
+            import re
+            import os
+            
+            # Base name without extension
+            basename = os.path.basename(filepath)
+            stem = os.path.splitext(basename)[0]
+            
+            # User specifically wants 6-digit pure number names to be grouped together.
+            # We assign them to group 0, others to group 1.
+            group = 0 if stem.isdigit() and len(stem) == 6 else 1
+            
+            parts = re.split(r'(\d+)', filepath)
+            result = [group]
+            for p in parts:
+                if p.isdigit():
+                    if p.startswith('0'):
+                        result.append((1, p))
+                    else:
+                        result.append((2, int(p)))
+                else:
+                    result.append((0, p))
+            return result
+            
+        self._file_list = sorted((os.path.normpath(f) for f in files), key=natural_keys)
         target = os.path.normpath(os.path.abspath(filepath))
         try:
             self._current_index = self._file_list.index(target)
@@ -487,6 +512,9 @@ class MainWindow(QMainWindow):
         cmap = self.combo_cmap.currentText()
         if mode == "Z Height":
             values = self._pc_data.points[:, 2]
+            colors = values_to_colors_fast(values, cmap)
+        elif mode == "Intensity" and getattr(self._pc_data, 'intensities', None) is not None:
+            values = self._pc_data.intensities
             colors = values_to_colors_fast(values, cmap)
         else:
             colors = None

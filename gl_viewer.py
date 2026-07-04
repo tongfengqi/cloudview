@@ -71,13 +71,14 @@ class GLViewer(QOpenGLWidget):
         self._points = points.astype(np.float32) if points is not None else None
         self._colors = colors.astype(np.float32) if colors is not None else None
         if self._points is not None and len(self._points) > 0:
-            # Filter NaN before computing bounds
-            valid = np.isfinite(self._points).all(axis=1)
-            pts = self._points[valid] if valid.any() else self._points
-            self._center = (pts.min(axis=0) + pts.max(axis=0)) / 2
-            ext = float(np.max(pts.max(axis=0) - pts.min(axis=0)))
-            self._extent = ext if math.isfinite(ext) and ext > 0 else 10.0
             if reset_camera:
+                # Filter NaN before computing bounds
+                valid = np.isfinite(self._points).all(axis=1)
+                pts = self._points[valid] if valid.any() else self._points
+                self._center = (pts.min(axis=0) + pts.max(axis=0)) / 2
+                ext = float(np.max(pts.max(axis=0) - pts.min(axis=0)))
+                self._extent = ext if math.isfinite(ext) and ext > 0 else 10.0
+                
                 self._cam_target = self._center.copy()
                 self._cam_dist = self._extent * 1.0
                 if self._cam_dist < 1.0:

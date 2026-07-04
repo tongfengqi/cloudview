@@ -8,12 +8,13 @@ import numpy as np
 class PointCloudData:
     """Holds loaded point cloud data and metadata."""
 
-    __slots__ = ('points', 'filepath', 'filename', 'num_points',
+    __slots__ = ('points', 'intensities', 'filepath', 'filename', 'num_points',
                  'x_range', 'y_range', 'z_range', 'file_size', 'format',
                  'header_points')
 
-    def __init__(self, points, filepath, fmt='unknown', header_points=None):
+    def __init__(self, points, filepath, fmt='unknown', header_points=None, intensities=None):
         self.points = points  # Nx3 float32 array
+        self.intensities = intensities
         self.filepath = filepath
         self.filename = os.path.basename(filepath)
         self.file_size = os.path.getsize(filepath)
@@ -77,12 +78,14 @@ def load_bin(filepath, max_points=None):
 
     data = np.fromfile(filepath, dtype=np.float32).reshape(-1, 4)
     points = data[:, :3].copy()
+    intensities = data[:, 3].copy()
 
     if max_points and len(points) > max_points:
         idx = np.random.choice(len(points), max_points, replace=False)
         points = points[idx]
+        intensities = intensities[idx]
 
-    return PointCloudData(points, filepath, fmt='bin(float32 x4)')
+    return PointCloudData(points, filepath, fmt='bin(float32 x4)', intensities=intensities)
 
 
 # ============================================================
@@ -216,12 +219,20 @@ def load_pcd(filepath, max_points=None):
     valid = ~(np.isnan(raw_x) | np.isnan(raw_y) | np.isnan(raw_z))
     points = np.column_stack([raw_x[valid], raw_y[valid], raw_z[valid]])
 
+    intensities = None
+    if 'intensity' in data.dtype.names:
+        intensities = data['intensity'].astype(np.float32)[valid]
+    elif 'i' in data.dtype.names:
+        intensities = data['i'].astype(np.float32)[valid]
+
     if max_points and len(points) > max_points:
         idx = np.random.choice(len(points), max_points, replace=False)
         points = points[idx]
+        if intensities is not None:
+            intensities = intensities[idx]
 
     return PointCloudData(points, filepath, fmt=f"pcd({header.get('version','?')}, {data_type})",
-                          header_points=num_points)
+                          header_points=num_points, intensities=intensities)
 
 
 # ============================================================

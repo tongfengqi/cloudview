@@ -30,7 +30,25 @@ class BBox3D:
         self.center = np.array(center, dtype=np.float32)
         self.yaw = yaw
         self.size = np.array(size, dtype=np.float32)
-        self.color = CATEGORY_COLORS.get(obj_type, DEFAULT_COLOR)
+        
+        # Try exact match
+        color = CATEGORY_COLORS.get(obj_type)
+        if color is None:
+            # Try case-insensitive match
+            for k, v in CATEGORY_COLORS.items():
+                if k.lower() == obj_type.lower():
+                    color = v
+                    break
+        if color is None:
+            # Generate deterministic fallback color
+            import hashlib
+            h = hashlib.md5(obj_type.encode('utf-8')).hexdigest()
+            r = int(h[0:2], 16) / 255.0 * 0.6 + 0.2
+            g = int(h[2:4], 16) / 255.0 * 0.6 + 0.2
+            b = int(h[4:6], 16) / 255.0 * 0.6 + 0.2
+            color = (r, g, b)
+            
+        self.color = color
         self.vertices = self._compute_vertices()
 
     def _compute_vertices(self):
