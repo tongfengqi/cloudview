@@ -286,6 +286,11 @@ class MainWindow(QMainWindow):
         btn_open.clicked.connect(self._open_file_dialog)
         toolbar.addWidget(btn_open)
 
+        # Open folder
+        btn_open_folder = QPushButton(" Open Folder")
+        btn_open_folder.clicked.connect(self._open_folder_dialog)
+        toolbar.addWidget(btn_open_folder)
+
         toolbar.addSeparator()
 
         # Prev / Next frame
@@ -365,6 +370,25 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._load_file(path)
+
+    def _open_folder_dialog(self):
+        path = QFileDialog.getExistingDirectory(self, "Open Folder")
+        if path:
+            self._load_directory(path)
+
+    def _load_directory(self, directory):
+        extensions = ('.bin', '.pcd')
+        files = []
+        for ext in extensions:
+            files.extend(glob.glob(os.path.join(directory, f'*{ext}')))
+        if not files:
+            QMessageBox.warning(self, "No Files", "No .bin or .pcd files found in the directory.")
+            return
+            
+        # Build the file list using a dummy file path in that directory
+        self._build_file_list(os.path.join(directory, "dummy.bin"))
+        if self._file_list:
+            self._load_file(self._file_list[0])
 
     def _build_file_list(self, filepath):
         directory = os.path.dirname(os.path.abspath(filepath))
@@ -538,7 +562,11 @@ class MainWindow(QMainWindow):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
-                ext = os.path.splitext(url.toLocalFile())[1].lower()
+                path = url.toLocalFile()
+                if os.path.isdir(path):
+                    event.acceptProposedAction()
+                    return
+                ext = os.path.splitext(path)[1].lower()
                 if ext in ('.bin', '.pcd'):
                     event.acceptProposedAction()
                     return
@@ -546,6 +574,9 @@ class MainWindow(QMainWindow):
     def dropEvent(self, event: QDropEvent):
         for url in event.mimeData().urls():
             path = url.toLocalFile()
+            if os.path.isdir(path):
+                self._load_directory(path)
+                break
             ext = os.path.splitext(path)[1].lower()
             if ext in ('.bin', '.pcd'):
                 self._load_file(path)
