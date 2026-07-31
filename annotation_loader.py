@@ -188,7 +188,8 @@ def _parse_size(obj):
         if isinstance(s, dict):
             return (s.get('x', 1.0), s.get('y', 1.0), s.get('z', 1.0))
         elif isinstance(s, (list, tuple)) and len(s) >= 3:
-            return (s[0], s[1], s[2])
+            # Original JSON size is [width, length, height] -> map to (length/x, width/y, height/z)
+            return (s[1], s[0], s[2])
 
     if 'scale' in obj:
         scl = obj['scale']
