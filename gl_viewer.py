@@ -4,7 +4,8 @@ import math
 import numpy as np
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtOpenGL import QOpenGLFunctions_3_3_Compatibility
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 
 
 # GL constants
@@ -23,6 +24,10 @@ GL_QUADS = 0x0007
 GL_FLOAT = 0x1406
 GL_VERTEX_ARRAY = 0x8074
 GL_COLOR_ARRAY = 0x8076
+GL_ARRAY_BUFFER = 0x8892
+GL_ELEMENT_ARRAY_BUFFER = 0x8893
+GL_TEXTURE_2D = 0x0DE1
+GL_CULL_FACE = 0x0B44
 
 
 class GLViewer(QOpenGLWidget):
@@ -133,6 +138,16 @@ class GLViewer(QOpenGLWidget):
         if gl is None:
             return
 
+        gl.glUseProgram(0)
+        gl.glBindBuffer(GL_ARRAY_BUFFER, 0)
+        gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
+        gl.glDisable(GL_TEXTURE_2D)
+        gl.glDisable(GL_CULL_FACE)
+        gl.glEnable(GL_DEPTH_TEST)
+        gl.glEnable(GL_POINT_SMOOTH)
+        gl.glEnable(GL_BLEND)
+        gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
         gl.glClearColor(*self._bg_color, 1.0)
         gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
@@ -144,13 +159,13 @@ class GLViewer(QOpenGLWidget):
         aspect = w / h
         near = max(self._cam_dist * 0.001, 0.01)
         far = max(self._cam_dist * 100, 1000)
-        self._perspective(gl, self._cam_fov, aspect, near, far)
+        proj_mat = self._perspective(gl, self._cam_fov, aspect, near, far)
 
         # View
         gl.glMatrixMode(GL_MODELVIEW)
         gl.glLoadIdentity()
         eye = self._cam_eye()
-        self._look_at(gl, eye, self._cam_target, np.array([0, 0, 1], dtype=np.float32))
+        view_mat = self._look_at(gl, eye, self._cam_target, np.array([0, 0, 1], dtype=np.float32))
 
         # Grid
         if self._show_grid:
@@ -167,6 +182,7 @@ class GLViewer(QOpenGLWidget):
         # Bounding boxes
         if self._show_bboxes and self._bboxes:
             self._draw_bboxes(gl)
+            self._draw_bbox_ids(view_mat, proj_mat, w, h)
 
     def resizeGL(self, w, h):
         if self._gl:
@@ -315,6 +331,82 @@ class GLViewer(QOpenGLWidget):
             gl.glVertex3f(*arrow_right)
             gl.glEnd()
 
+    def _draw_bbox_ids(self, view_mat, proj_mat, w, h):
+        """Draw 3D bounding box ID labels over the OpenGL scene."""
+        if not self._bboxes:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        font = painter.font()
+        font.setPointSize(10)
+        font.setBold(True)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+
+        for bbox in self._bboxes:
+            if bbox.obj_id is None or str(bbox.obj_id).strip() == "":
+                continue
+
+            label = f"ID: {bbox.obj_id}"
+            # Place label slightly above the top center of the bbox
+            pos = bbox.center + np.array([0.0, 0.0, bbox.size[2] / 2.0 + 0.25], dtype=np.float32)
+            screen_pos = self._world_to_screen(pos, view_mat, proj_mat, w, h)
+            if screen_pos is None:
+                continue
+
+            sx, sy = screen_pos
+            is_selected = (bbox is self._selected_bbox)
+            r, g, b = [int(c * 255) for c in bbox.color]
+
+            rect = fm.boundingRect(label)
+            pad_x, pad_y = 6, 3
+            w_box = rect.width() + pad_x * 2
+            h_box = rect.height() + pad_y * 2
+
+            x = sx - w_box / 2.0
+            y = sy - h_box / 2.0
+
+            if is_selected:
+                bg_color = QColor(r, g, b, 240)
+                border_color = QColor(255, 255, 255, 255)
+                text_color = QColor(0, 0, 0) if (r * 0.299 + g * 0.587 + b * 0.114) > 160 else QColor(255, 255, 255)
+                pen_width = 2.0
+            else:
+                bg_color = QColor(25, 25, 30, 200)
+                border_color = QColor(r, g, b, 230)
+                text_color = QColor(240, 240, 245)
+                pen_width = 1.5
+
+            box_rect = QRectF(x, y, w_box, h_box)
+            painter.setBrush(QBrush(bg_color))
+            pen = QPen(border_color, pen_width)
+            painter.setPen(pen)
+            painter.drawRoundedRect(box_rect, 4, 4)
+
+            painter.setPen(QPen(text_color))
+            painter.drawText(box_rect, Qt.AlignCenter, label)
+
+        painter.end()
+
+    def _world_to_screen(self, pos, view_mat, proj_mat, w, h):
+        """Project a 3D world coordinate to 2D screen coordinate in pixels."""
+        P = np.array([pos[0], pos[1], pos[2], 1.0], dtype=np.float32)
+        v = view_mat @ P
+        c = proj_mat @ v
+        w_clip = c[3]
+        if w_clip <= 1e-5:
+            return None
+        ndc_x = c[0] / w_clip
+        ndc_y = c[1] / w_clip
+        ndc_z = c[2] / w_clip
+        if ndc_z < -1.0 or ndc_z > 1.0 or abs(ndc_x) > 1.5 or abs(ndc_y) > 1.5:
+            return None
+        screen_x = (ndc_x + 1.0) * 0.5 * w
+        screen_y = (1.0 - ndc_y) * 0.5 * h
+        return screen_x, screen_y
+
     # -- Picking --
 
     def _pick_bbox(self, mx, my):
@@ -419,6 +511,7 @@ class GLViewer(QOpenGLWidget):
         m[2, 3] = (2 * far * near) / (near - far)
         m[3, 2] = -1
         gl.glLoadMatrixf(m.T.flatten().tolist())
+        return m
 
     def _look_at(self, gl, eye, target, up):
         f = target - eye
@@ -436,6 +529,7 @@ class GLViewer(QOpenGLWidget):
         m[1, 3] = -np.dot(u, eye)
         m[2, 3] = np.dot(f, eye)
         gl.glLoadMatrixf(m.T.flatten().tolist())
+        return m
 
     # -- Mouse --
 

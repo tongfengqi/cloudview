@@ -146,32 +146,119 @@ class BBox3D:
         arrow_right = end + right_dir * arrow_len
 
         return start, end, arrow_left, arrow_right
-        """Return top face vertices."""
-        return [self.vertices[i] for i in [4, 5, 6, 7]]
+
+
+def quaternion_to_yaw(w, x, y, z):
+    """Convert quaternion [w, x, y, z] to yaw angle (radians around Z axis)."""
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _parse_position(obj):
+    if 'psr' in obj and isinstance(obj['psr'], dict) and 'position' in obj['psr']:
+        pos = obj['psr']['position']
+        if isinstance(pos, dict):
+            return (pos.get('x', 0.0), pos.get('y', 0.0), pos.get('z', 0.0))
+        elif isinstance(pos, (list, tuple)) and len(pos) >= 3:
+            return (pos[0], pos[1], pos[2])
+
+    if 'translation' in obj and isinstance(obj['translation'], (list, tuple)) and len(obj['translation']) >= 3:
+        t = obj['translation']
+        return (t[0], t[1], t[2])
+
+    if 'position' in obj:
+        pos = obj['position']
+        if isinstance(pos, dict):
+            return (pos.get('x', 0.0), pos.get('y', 0.0), pos.get('z', 0.0))
+        elif isinstance(pos, (list, tuple)) and len(pos) >= 3:
+            return (pos[0], pos[1], pos[2])
+
+    return (0.0, 0.0, 0.0)
+
+
+def _parse_size(obj):
+    if 'psr' in obj and isinstance(obj['psr'], dict) and 'scale' in obj['psr']:
+        scl = obj['psr']['scale']
+        if isinstance(scl, dict):
+            return (scl.get('x', 1.0), scl.get('y', 1.0), scl.get('z', 1.0))
+        elif isinstance(scl, (list, tuple)) and len(scl) >= 3:
+            return (scl[0], scl[1], scl[2])
+
+    if 'size' in obj:
+        s = obj['size']
+        if isinstance(s, dict):
+            return (s.get('x', 1.0), s.get('y', 1.0), s.get('z', 1.0))
+        elif isinstance(s, (list, tuple)) and len(s) >= 3:
+            return (s[0], s[1], s[2])
+
+    if 'scale' in obj:
+        scl = obj['scale']
+        if isinstance(scl, dict):
+            return (scl.get('x', 1.0), scl.get('y', 1.0), scl.get('z', 1.0))
+        elif isinstance(scl, (list, tuple)) and len(scl) >= 3:
+            return (scl[0], scl[1], scl[2])
+
+    return (1.0, 1.0, 1.0)
+
+
+def _parse_rotation(rot_data, default_heading=0.0):
+    if rot_data is not None:
+        if isinstance(rot_data, dict):
+            return float(rot_data.get('z', default_heading))
+        elif isinstance(rot_data, (list, tuple)):
+            if len(rot_data) == 4:
+                # Quaternion [w, x, y, z]
+                w, x, y, z = [float(v) for v in rot_data]
+                return quaternion_to_yaw(w, x, y, z)
+            elif len(rot_data) == 3:
+                return float(rot_data[2])
+            elif len(rot_data) == 1:
+                return float(rot_data[0])
+        elif isinstance(rot_data, (int, float)):
+            return float(rot_data)
+    return float(default_heading)
 
 
 def load_annotation(filepath):
     """
-    Load a JSON annotation file.
+    Load a JSON annotation file (supports both converted format and raw dataset format).
     Returns list of BBox3D objects.
     """
     with open(filepath, 'r', encoding='utf-8') as f:
-        objects = json.load(f)
+        data = json.load(f)
+
+    if isinstance(data, dict):
+        objects = data.get('objects', [])
+    elif isinstance(data, list):
+        objects = data
+    else:
+        objects = []
 
     bboxes = []
     for obj in objects:
-        psr = obj.get('psr', {})
-        pos = psr.get('position', {})
-        rot = psr.get('rotation', {})
-        scl = psr.get('scale', {})
+        if not isinstance(obj, dict):
+            continue
 
-        center = (pos.get('x', 0), pos.get('y', 0), pos.get('z', 0))
-        yaw = rot.get('z', 0)
-        size = (scl.get('x', 1), scl.get('y', 1), scl.get('z', 1))
+        obj_id = obj.get('obj_id')
+        if obj_id is None:
+            obj_id = obj.get('ID', obj.get('id', ''))
+
+        obj_type = obj.get('obj_type') or obj.get('category') or obj.get('type') or 'unknown'
+
+        center = _parse_position(obj)
+        size = _parse_size(obj)
+
+        default_heading = float(obj.get('obj_heading', 0.0) or 0.0)
+        rot_data = None
+        if 'psr' in obj and isinstance(obj['psr'], dict) and 'rotation' in obj['psr']:
+            rot_data = obj['psr']['rotation']
+        elif 'rotation' in obj:
+            rot_data = obj['rotation']
+
+        yaw = _parse_rotation(rot_data, default_heading)
 
         bbox = BBox3D(
-            obj_id=obj.get('obj_id', ''),
-            obj_type=obj.get('obj_type', 'unknown'),
+            obj_id=obj_id,
+            obj_type=obj_type,
             center=center,
             yaw=yaw,
             size=size,
