@@ -269,19 +269,33 @@ def load_annotation(filepath):
     return bboxes
 
 
-def find_matching_json(bin_path):
+def find_matching_json(bin_path, custom_json_hint=None):
     """Find the JSON annotation file matching a bin/pcd file."""
     base = os.path.splitext(bin_path)[0]
     fname = os.path.basename(base) + '.json'
     parent = os.path.dirname(bin_path)
 
-    candidates = [
+    candidates = []
+    if custom_json_hint:
+        if os.path.isfile(custom_json_hint):
+            hint_stem = os.path.splitext(os.path.basename(custom_json_hint))[0]
+            bin_stem = os.path.basename(base)
+            if hint_stem.lower() == bin_stem.lower():
+                candidates.append(custom_json_hint)
+            else:
+                candidates.append(os.path.join(os.path.dirname(custom_json_hint), fname))
+        elif os.path.isdir(custom_json_hint):
+            candidates.append(os.path.join(custom_json_hint, fname))
+
+    candidates.extend([
         base + '.json',                                          # same dir, same name
         os.path.join(parent, 'json', fname),                     # json/ subdirectory
         os.path.join(os.path.dirname(parent), 'json', fname),    # sibling json/
         os.path.join(parent, 'json_0', fname),                   # json_0/ subdirectory
         os.path.join(os.path.dirname(parent), 'json_0', fname),  # sibling json_0/
-    ]
+        os.path.join(os.path.dirname(parent), '1_BEV', 'bev_lidar', fname),
+        os.path.join(os.path.dirname(parent), 'bev_lidar', fname),
+    ])
 
     for path in candidates:
         if os.path.isfile(path):

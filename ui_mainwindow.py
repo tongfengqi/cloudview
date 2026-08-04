@@ -428,7 +428,10 @@ class MainWindow(QMainWindow):
         except ValueError:
             self._current_index = -1
 
-    def _load_file(self, filepath, skip_popup=False):
+    def _load_file(self, filepath, skip_popup=False, custom_json_hint=None):
+        if custom_json_hint:
+            self._custom_json_hint = custom_json_hint
+
         ok, msg, info = validate_file(filepath)
         if ok is False:
             if not skip_popup:
@@ -462,9 +465,10 @@ class MainWindow(QMainWindow):
 
             self._apply_colors()
 
-            json_path = find_matching_json(filepath)
+            json_hint = getattr(self, '_custom_json_hint', None)
+            json_path = find_matching_json(filepath, json_hint)
             if json_path:
-                if skip_popup:
+                if skip_popup or json_hint:
                     self._load_json(json_path)
                 else:
                     reply = QMessageBox.question(
