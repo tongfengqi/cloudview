@@ -1,6 +1,7 @@
 """3D bounding box annotation loader."""
 
 import os
+import re
 import json
 import math
 import numpy as np
@@ -12,9 +13,12 @@ CATEGORY_COLORS = {
     'Excavator':         (0.95, 0.75, 0.15),  # yellow
     'movable_object.barrier': (0.50, 0.50, 0.50),  # gray
     'Dump_truck':        (0.25, 0.60, 0.90),  # blue
+    'dump_truck':        (0.25, 0.60, 0.90),  # blue
     'Loader':            (0.20, 0.80, 0.40),  # green
     'Forklift':          (0.80, 0.40, 0.90),  # purple
     'Person':            (1.00, 0.50, 0.30),  # orange
+    'pedestrian':        (1.00, 0.50, 0.30),  # orange
+    'car':               (0.20, 0.75, 0.85),  # cyan
 }
 DEFAULT_COLOR = (0.7, 0.7, 0.7)
 
@@ -22,14 +26,16 @@ DEFAULT_COLOR = (0.7, 0.7, 0.7)
 class BBox3D:
     """A single 3D bounding box."""
 
-    __slots__ = ('obj_id', 'obj_type', 'center', 'yaw', 'size', 'vertices', 'color')
+    __slots__ = ('obj_id', 'obj_type', 'center', 'yaw', 'size', 'vertices', 'color', 'score', 'is_prediction')
 
-    def __init__(self, obj_id, obj_type, center, yaw, size):
+    def __init__(self, obj_id, obj_type, center, yaw, size, score=None, is_prediction=False):
         self.obj_id = obj_id
         self.obj_type = obj_type
         self.center = np.array(center, dtype=np.float32)
         self.yaw = yaw
         self.size = np.array(size, dtype=np.float32)
+        self.score = float(score) if score is not None else None
+        self.is_prediction = is_prediction
         
         # Try exact match
         color = CATEGORY_COLORS.get(obj_type)
@@ -103,7 +109,7 @@ class BBox3D:
     def get_yaw_arrow(self, length=None):
         """
         Return arrow endpoints for yaw direction visualization.
-        Returns (start, end, arrow_left, arrow_right) — all np.array(3).
+        Returns (start, end, arrow_left, arrow_right) - all np.array(3).
         Arrow extends from bbox front edge outward in the yaw direction.
         """
         if length is None:
@@ -221,12 +227,54 @@ def _parse_rotation(rot_data, default_heading=0.0):
 
 def load_annotation(filepath):
     """
-    Load a JSON annotation file (supports both converted format and raw dataset format).
+    Load a JSON annotation file.
+    Supports:
+      1. Model inference predictions (Dict with 'pred_bboxes_3d', 'pred_scores', 'pred_names')
+      2. Converted dataset format (List of dicts with 'psr')
+      3. Raw dataset format (Dict with 'objects', quaternion 'rotation', size [w,l,h])
     Returns list of BBox3D objects.
     """
     with open(filepath, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
+    # 1. Model inference predictions format
+    if isinstance(data, dict) and ('pred_bboxes_3d' in data or 'pred_boxes_3d' in data or 'boxes_3d' in data):
+        raw_boxes = data.get('pred_bboxes_3d') or data.get('pred_boxes_3d') or data.get('boxes_3d') or []
+        scores = data.get('pred_scores') or data.get('scores') or []
+        names = data.get('pred_names') or data.get('names') or data.get('pred_labels') or data.get('labels') or []
+
+        bboxes = []
+        for i, box in enumerate(raw_boxes):
+            if len(box) >= 7:
+                # box is [x, y, z_bottom, dx, dy, dz, yaw]
+                # convert bottom z to center z: z_center = z_bottom + dz / 2.0
+                center = (float(box[0]), float(box[1]), float(box[2]) + float(box[5]) / 2.0)
+                size = (float(box[3]), float(box[4]), float(box[5]))
+                yaw = float(box[6])
+            elif len(box) >= 6:
+                center = (float(box[0]), float(box[1]), float(box[2]) + float(box[5]) / 2.0)
+                size = (float(box[3]), float(box[4]), float(box[5]))
+                yaw = 0.0
+            else:
+                continue
+
+            score = float(scores[i]) if i < len(scores) else None
+            obj_type = str(names[i]) if i < len(names) else 'unknown'
+            obj_id = str(i + 1)
+
+            bbox = BBox3D(
+                obj_id=obj_id,
+                obj_type=obj_type,
+                center=center,
+                yaw=yaw,
+                size=size,
+                score=score,
+                is_prediction=True
+            )
+            bboxes.append(bbox)
+        return bboxes
+
+    # 2. Converted or Raw dataset formats
     if isinstance(data, dict):
         objects = data.get('objects', [])
     elif isinstance(data, list):
@@ -238,6 +286,9 @@ def load_annotation(filepath):
     for obj in objects:
         if not isinstance(obj, dict):
             continue
+
+        if 'obj_data' in obj and isinstance(obj['obj_data'], dict):
+            obj = obj['obj_data']
 
         obj_id = obj.get('obj_id')
         if obj_id is None:
@@ -263,30 +314,108 @@ def load_annotation(filepath):
             center=center,
             yaw=yaw,
             size=size,
+            score=None,
+            is_prediction=False
         )
         bboxes.append(bbox)
 
     return bboxes
 
 
+def index_annotation_dir(directory):
+    """
+    Recursively scan an annotation/inference directory and index all .json files.
+    Returns:
+        (anno_map, numeric_map):
+            anno_map: dict of {stem.lower(): full_filepath}
+            numeric_map: dict of {int(stem): full_filepath} (for digit-only stems)
+    """
+    anno_map = {}
+    numeric_map = {}
+    if not directory or not os.path.isdir(directory):
+        return anno_map, numeric_map
+
+    for root, _, files in os.walk(directory):
+        for f in files:
+            if f.lower().endswith('.json'):
+                stem = os.path.splitext(f)[0]
+                full_path = os.path.join(root, f)
+                stem_lower = stem.lower()
+                if stem_lower not in anno_map:
+                    anno_map[stem_lower] = full_path
+
+                # Also index prefix-stripped stem for inference files (e.g. 0_00187680_... -> 00187680_...)
+                stripped = re.sub(r'^\d+_', '', stem_lower)
+                if stripped and stripped != stem_lower and stripped not in anno_map:
+                    anno_map[stripped] = full_path
+
+                if stem.isdigit():
+                    try:
+                        int_val = int(stem)
+                        if int_val not in numeric_map:
+                            numeric_map[int_val] = full_path
+                    except ValueError:
+                        pass
+                elif stripped.isdigit():
+                    try:
+                        int_val = int(stripped)
+                        if int_val not in numeric_map:
+                            numeric_map[int_val] = full_path
+                    except ValueError:
+                        pass
+
+    return anno_map, numeric_map
+
+
 def find_matching_json(bin_path, custom_json_hint=None):
-    """Find the JSON annotation file matching a bin/pcd file."""
+    """
+    Find the JSON annotation file matching a bin/pcd file.
+    Supports:
+      - custom_json_hint as (anno_map, numeric_map) tuple or anno_map dict
+      - custom_json_hint as folder path or file path
+      - default auto-discovery around bin_path
+    """
     base = os.path.splitext(bin_path)[0]
-    fname = os.path.basename(base) + '.json'
+    bin_stem = os.path.basename(base)
+    fname = bin_stem + '.json'
     parent = os.path.dirname(bin_path)
 
+    # 1. Custom indexed mapping
+    if isinstance(custom_json_hint, tuple) and len(custom_json_hint) == 2:
+        anno_map, numeric_map = custom_json_hint
+        stem_lower = bin_stem.lower()
+        if stem_lower in anno_map:
+            return anno_map[stem_lower]
+        stripped = re.sub(r'^\d+_', '', stem_lower)
+        if stripped in anno_map:
+            return anno_map[stripped]
+        if bin_stem.isdigit() and int(bin_stem) in numeric_map:
+            return numeric_map[int(bin_stem)]
+
+    if isinstance(custom_json_hint, dict):
+        stem_lower = bin_stem.lower()
+        if stem_lower in custom_json_hint:
+            return custom_json_hint[stem_lower]
+        stripped = re.sub(r'^\d+_', '', stem_lower)
+        if stripped in custom_json_hint:
+            return custom_json_hint[stripped]
+
+    # 2. Custom path or directory hint
     candidates = []
-    if custom_json_hint:
+    if isinstance(custom_json_hint, str) and custom_json_hint:
         if os.path.isfile(custom_json_hint):
             hint_stem = os.path.splitext(os.path.basename(custom_json_hint))[0]
-            bin_stem = os.path.basename(base)
             if hint_stem.lower() == bin_stem.lower():
                 candidates.append(custom_json_hint)
             else:
                 candidates.append(os.path.join(os.path.dirname(custom_json_hint), fname))
         elif os.path.isdir(custom_json_hint):
             candidates.append(os.path.join(custom_json_hint, fname))
+            candidates.append(os.path.join(custom_json_hint, 'json', fname))
+            candidates.append(os.path.join(custom_json_hint, '1_BEV', 'bev_lidar', fname))
+            candidates.append(os.path.join(custom_json_hint, 'bev_lidar', fname))
 
+    # 3. Default relative directory candidates
     candidates.extend([
         base + '.json',                                          # same dir, same name
         os.path.join(parent, 'json', fname),                     # json/ subdirectory

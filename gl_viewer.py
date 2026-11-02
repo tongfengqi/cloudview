@@ -61,9 +61,14 @@ class GLViewer(QOpenGLWidget):
         self._show_axes = True
         self._show_grid = True
 
-        # Bounding boxes
+        # Ground truth bounding boxes
         self._bboxes = None   # list of BBox3D
         self._show_bboxes = True
+
+        # Model prediction bounding boxes
+        self._pred_bboxes = None  # list of BBox3D
+        self._show_pred = True
+
         self._selected_bbox = None
         self._drag_start = None  # track if mouse was dragged vs clicked
 
@@ -115,12 +120,21 @@ class GLViewer(QOpenGLWidget):
         self.update()
 
     def set_bboxes(self, bboxes):
-        """Set bounding boxes for visualization."""
+        """Set ground truth bounding boxes."""
         self._bboxes = bboxes
         self.update()
 
     def toggle_bboxes(self):
         self._show_bboxes = not self._show_bboxes
+        self.update()
+
+    def set_pred_bboxes(self, pred_bboxes):
+        """Set model prediction bounding boxes."""
+        self._pred_bboxes = pred_bboxes
+        self.update()
+
+    def toggle_pred(self):
+        self._show_pred = not self._show_pred
         self.update()
 
     # -- OpenGL --
@@ -143,10 +157,6 @@ class GLViewer(QOpenGLWidget):
         gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
         gl.glDisable(GL_TEXTURE_2D)
         gl.glDisable(GL_CULL_FACE)
-        gl.glEnable(GL_DEPTH_TEST)
-        gl.glEnable(GL_POINT_SMOOTH)
-        gl.glEnable(GL_BLEND)
-        gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
         gl.glClearColor(*self._bg_color, 1.0)
         gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
@@ -179,10 +189,22 @@ class GLViewer(QOpenGLWidget):
         if self._points is not None and len(self._points) > 0:
             self._draw_points(gl)
 
-        # Bounding boxes
+        # Ground truth bounding boxes
         if self._show_bboxes and self._bboxes:
-            self._draw_bboxes(gl)
-            self._draw_bbox_ids(view_mat, proj_mat, w, h)
+            self._draw_bboxes(gl, self._bboxes, is_pred=False)
+
+        # Prediction bounding boxes
+        if self._show_pred and self._pred_bboxes:
+            self._draw_bboxes(gl, self._pred_bboxes, is_pred=True)
+
+        # Draw 2D projected ID / Category badges over the 3D scene
+        all_visible_boxes = []
+        if self._show_bboxes and self._bboxes:
+            all_visible_boxes.extend(self._bboxes)
+        if self._show_pred and self._pred_bboxes:
+            all_visible_boxes.extend(self._pred_bboxes)
+        if all_visible_boxes:
+            self._draw_bbox_ids(view_mat, proj_mat, w, h, all_visible_boxes)
 
     def resizeGL(self, w, h):
         if self._gl:
@@ -282,16 +304,16 @@ class GLViewer(QOpenGLWidget):
                 return m * magnitude
         return magnitude
 
-    def _draw_bboxes(self, gl):
+    def _draw_bboxes(self, gl, bbox_list, is_pred=False):
         """Draw 3D bounding boxes."""
-        for bbox in self._bboxes:
+        for bbox in bbox_list:
             is_selected = (bbox is self._selected_bbox)
             r, g, b = bbox.color
             edges = bbox.get_edges()
 
             # Selected bbox: brighter, thicker
-            line_width = 4.0 if is_selected else 2.0
-            edge_alpha = 1.0 if is_selected else 0.9
+            line_width = 4.0 if is_selected else (2.5 if is_pred else 2.0)
+            edge_alpha = 1.0 if is_selected else 0.95
             face_alpha = 0.25 if is_selected else 0.12
 
             # Draw edges
@@ -321,7 +343,10 @@ class GLViewer(QOpenGLWidget):
             # Draw yaw direction arrow
             start, end, arrow_left, arrow_right = bbox.get_yaw_arrow()
             gl.glLineWidth(3.0)
-            gl.glColor4f(1.0, 1.0, 1.0, 0.9)
+            if is_pred:
+                gl.glColor4f(1.0, 0.9, 0.2, 0.95)  # gold arrow for prediction
+            else:
+                gl.glColor4f(1.0, 1.0, 1.0, 0.9)   # white arrow for GT
             gl.glBegin(GL_LINES)
             gl.glVertex3f(*start)
             gl.glVertex3f(*end)
@@ -331,11 +356,8 @@ class GLViewer(QOpenGLWidget):
             gl.glVertex3f(*arrow_right)
             gl.glEnd()
 
-    def _draw_bbox_ids(self, view_mat, proj_mat, w, h):
-        """Draw 3D bounding box ID labels over the OpenGL scene."""
-        if not self._bboxes:
-            return
-
+    def _draw_bbox_ids(self, view_mat, proj_mat, w, h, bbox_list):
+        """Draw 3D bounding box ID / prediction labels over the OpenGL scene."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
@@ -345,11 +367,14 @@ class GLViewer(QOpenGLWidget):
         painter.setFont(font)
         fm = painter.fontMetrics()
 
-        for bbox in self._bboxes:
-            if bbox.obj_id is None or str(bbox.obj_id).strip() == "":
-                continue
+        for bbox in bbox_list:
+            if getattr(bbox, 'score', None) is not None:
+                label = f"{bbox.obj_type} {bbox.score:.2f}"
+            elif bbox.obj_id is not None and str(bbox.obj_id).strip() != "":
+                label = f"ID: {bbox.obj_id}"
+            else:
+                label = f"{bbox.obj_type}"
 
-            label = f"ID: {bbox.obj_id}"
             # Place label slightly above the top center of the bbox
             pos = bbox.center + np.array([0.0, 0.0, bbox.size[2] / 2.0 + 0.25], dtype=np.float32)
             screen_pos = self._world_to_screen(pos, view_mat, proj_mat, w, h)
@@ -418,7 +443,13 @@ class GLViewer(QOpenGLWidget):
         best_bbox = None
         best_dist = float('inf')
 
-        for bbox in self._bboxes:
+        candidates = []
+        if self._show_bboxes and self._bboxes:
+            candidates.extend(self._bboxes)
+        if self._show_pred and self._pred_bboxes:
+            candidates.extend(self._pred_bboxes)
+
+        for bbox in candidates:
             t = self._ray_intersect_bbox(ray_origin, ray_dir, bbox)
             if t is not None and t < best_dist:
                 best_dist = t
@@ -464,7 +495,6 @@ class GLViewer(QOpenGLWidget):
 
     def _ray_intersect_bbox(self, ray_origin, ray_dir, bbox):
         """Ray-AABB intersection test. Returns t (distance) or None."""
-        # Use axis-aligned bounding box of the oriented bbox vertices
         verts = bbox.vertices
         bmin = verts.min(axis=0)
         bmax = verts.max(axis=0)
@@ -483,7 +513,7 @@ class GLViewer(QOpenGLWidget):
                 t_near = min(t1, t2)
                 t_far = max(t1, t2)
                 t_min = max(t_min, t_near)
-                t_max = min(t_max, t_far)
+                t_max = max(t_max, t_far)
                 if t_min > t_max or t_max < 0:
                     return None
 
@@ -561,9 +591,10 @@ class GLViewer(QOpenGLWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
-        # If left click without drag → pick bbox
-        if (self._mouse_button == Qt.LeftButton and self._drag_start is not None
-                and self._bboxes and self._show_bboxes):
+        # If left click without drag -> pick bbox
+        has_gt = bool(self._bboxes and self._show_bboxes)
+        has_pred = bool(self._pred_bboxes and self._show_pred)
+        if self._mouse_button == Qt.LeftButton and self._drag_start is not None and (has_gt or has_pred):
             pos = event.position().toPoint()
             dx = abs(pos.x() - self._drag_start.x())
             dy = abs(pos.y() - self._drag_start.y())

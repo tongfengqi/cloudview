@@ -1,6 +1,6 @@
 # CloudView
 
-A lightweight 3D point cloud viewer for `.bin` and `.pcd` files, with JSON annotation visualization.
+A lightweight 3D point cloud viewer for `.bin` and `.pcd` files, with JSON ground-truth annotation and model inference visualization.
 
 ## Features
 
@@ -8,12 +8,15 @@ A lightweight 3D point cloud viewer for `.bin` and `.pcd` files, with JSON annot
 - **3D rendering**: OpenGL with trackball camera (rotate, pan, zoom)
 - **Color modes**: Z-height coloring (viridis/plasma colormaps) or uniform color
 - **Scene aids**: RGB coordinate axes (X=red, Y=green, Z=blue), adjustable ground grid
-- **Bounding boxes**: Load JSON annotations, display 3D BBox with semi-transparent faces and yaw direction arrows
-- **3D ID Labels**: Real-time projected 2D ID badges displayed next to/above each 3D box with category-colored borders
-- **Dual Annotation Formats**: Supports both converted format (List with `psr`) and raw dataset format (Dict with `translation`, `size` [w,l,h], `rotation` quaternion `[w,x,y,z]`)
-- **Auto-detection**: Automatically finds matching JSON annotation file for the loaded point cloud
+- **Bounding boxes**: Load JSON annotations and model predictions, display 3D BBox with semi-transparent faces and yaw direction arrows
+- **3D ID & Score Labels**: Real-time projected 2D badges displayed next to/above each 3D box with category-colored borders and prediction confidence scores
+- **Independent Folder Loading**: Load point cloud folder, Ground Truth annotation folder, and Model Inference results folder independently
+- **Fast In-Memory Indexing**: Millisecond-level indexing of tens of thousands of JSON files, supporting multi-level subdirectories (`bin/`, `pcd/`, `json/`, `bev_lidar/`, index prefixes `0_`, `1_`, etc.)
+- **Only Infer Filtering**: One-click filter button (`Only Infer: ON/OFF`) to scrub strictly through point cloud frames that have inference results (e.g. 22 frames out of 25,000+)
+- **Dual / Triple Annotation Formats**: Supports converted format (List with `psr`), raw dataset format (Dict with `translation`, `size` [w,l,h], quaternion `[w,x,y,z]`), and model inference format (`pred_bboxes_3d`, `pred_scores`, `pred_names`)
+- **Auto-matching & Frame Navigation**: Seamless Prev/Next frame switching with synchronized GT and Pred loading
 - **Validation**: Detects non-float32 or non-4-column files with clear error messages
-- **Drag & drop**: Drop `.bin` or `.pcd` files directly into the window
+- **Drag & drop**: Drop `.bin`, `.pcd`, `.json` files or entire folders directly into the window
 
 ## Screenshot
 
@@ -39,14 +42,27 @@ python main.py path/to/pointcloud.bin
 python main.py path/to/pointcloud.pcd
 ```
 
-### Controls
-
-| Action | Control |
-|--------|---------|
-| Rotate | Left mouse drag |
-| Pan | Right mouse drag |
-| Zoom | Mouse wheel |
-| Reset view | Double-click / "Reset View" button |
+### Controls & Toolbar
+ 
+| Action | Control / Shortcut | Description |
+|--------|--------------------|-------------|
+| Open File | `Open File` button | Open a single `.bin` or `.pcd` point cloud file |
+| Open PC Folder | `PC Folder` button | Select folder with point clouds (auto-detects `bin/`, `pcd/`, etc.) |
+| Open Anno Folder | `Anno Folder` button | Select folder with Ground Truth JSON annotations |
+| Open Infer Folder | `Infer Folder` button | Select folder with Model Inference JSON results |
+| Clear Anno / Infer Folder | Right-click folder button or click `✕` in Info Panel | Clear custom annotation / inference directory |
+| Only Infer Filter | `Only Infer: OFF/ON` button | Filter point cloud sequence down strictly to frames with inference results |
+| Next Frame | `D` or `Right Arrow` or `Next (D)` | Jump to next point cloud frame (respects active filter) |
+| Prev Frame | `A` or `Left Arrow` or `Prev (A)` | Jump to previous point cloud frame (respects active filter) |
+| Frame Slider | Horizontal Slider | Scrub across frames in the active sequence |
+| Rotate | Left mouse drag | Orbit view around center |
+| Pan | Right mouse drag | Translate view |
+| Zoom | Mouse wheel | Zoom in/out |
+| Reset view | Double-click / `Reset View` | Reset camera to default perspective |
+| Select BBox | Left click on 3D box | Highlight box and view dimensions, coordinates, & confidence score in left panel |
+| Clear Selection | `Escape` | Deselect active 3D bounding box |
+| Toggle GT BBoxes | `GT: ON/OFF` button | Toggle Ground Truth 3D bounding boxes visibility |
+| Toggle Pred BBoxes | `Pred: ON/OFF` button | Toggle Model Prediction 3D bounding boxes visibility |
 
 ## Point Cloud Format
 
@@ -58,9 +74,9 @@ The viewer expects float32 binary files with 4 columns per point:
 
 Each point is 16 bytes (4 × float32).
 
-## Annotation Format
+## Annotation & Inference Formats
 
-CloudView natively supports two common 3D annotation JSON formats:
+CloudView natively supports three 3D annotation / prediction JSON formats:
 
 ### Format A: Converted / Standard PSR Format
 
@@ -104,17 +120,32 @@ CloudView natively supports two common 3D annotation JSON formats:
 - `size`: Box dimensions `[width, length, height]` (meters, automatically mapped to local coordinates)
 - `rotation`: Unit Quaternion `[w, x, y, z]` (automatically converted to yaw angle)
 
-Annotation files are auto-detected when they share the same name as the point cloud file (different extension).
+### Format C: Model Inference Results Format
+
+```json
+{
+  "pred_bboxes_3d": [
+    [10.5, -3.2, 0.05, 4.5, 1.8, 1.5, 1.23]
+  ],
+  "pred_scores": [0.89],
+  "pred_names": ["truck.dump_truck"]
+}
+```
+
+- `pred_bboxes_3d`: Each box is `[x, y, z_bottom, dx, dy, dz, yaw]`. CloudView automatically converts bottom `z` to geometric center `z = z_bottom + dz / 2.0`.
+- `pred_scores`: Prediction confidence score (displayed on 2D badge and details panel).
+- `pred_names`: Predicted category name.
+- Index prefixes (e.g. `0_00187585_...json`) are automatically stripped and matched to the corresponding point cloud file (`00187585_...pcd`).
 
 ## Project Structure
 
 ```
 tool/
 ├── main.py              Entry point
-├── ui_mainwindow.py     Main window with toolbar and info panel
-├── gl_viewer.py         OpenGL 3D renderer with camera controls and 3D ID label projection
+├── ui_mainwindow.py     Main window with toolbar, filtering, and info panel
+├── gl_viewer.py         OpenGL 3D renderer with camera controls, dual GT/Pred rendering, and projected 2D badges
 ├── pointcloud_loader.py Bin/PCD file loading and validation
-├── annotation_loader.py Dual-format JSON annotation loading and BBox computation
+├── annotation_loader.py Multi-format JSON annotation/prediction loading and BBox computation
 └── colormap.py          Color mapping (viridis, plasma)
 ```
 
